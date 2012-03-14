@@ -1,0 +1,560 @@
+#!/usr/bin/perl -w
+#
+# rpmbootstrap application, a debootstrap like for RPM distros
+#
+# $Id$
+#
+# Copyright B. Cornec 2010
+# Provided under the GPL v2
+
+# Syntax: see at end
+
+use strict 'vars';
+use Getopt::Long qw(:config auto_abbrev no_ignore_case);
+use Data::Dumper;
+use English;
+use LWP::UserAgent;
+use File::Basename;
+use File::Copy;
+use File::Find;
+use ProjectBuilder::Version;
+use ProjectBuilder::Base;
+use ProjectBuilder::Env;
+use ProjectBuilder::Conf;
+use ProjectBuilder::Distribution;
+
+# Global variables
+my %opts;					# CLI Options
+
+=pod
+
+=head1 NAME
+
+rpmbootstrap - creates a chrooted RPM based distribution a la debootstrap, aka Virtual Environment (VE)
+
+=head1 DESCRIPTION
+
+rpmbootstrap creates a chroot environment (Virtual Environment or VE) 
+with a minimal distribution in it, suited for building packages for example. 
+It's very much like debootstrap but for RPM based distribution. 
+It aims at supporting all distributions supported by project-builder.org 
+(RHEL, RH, Fedora, OpeSUSE, SLES, Mandriva, ...)
+
+It is inspired by work done by Steve Kemp for rinse (http://www.steve.org.uk/), 
+and similar to mock or febootstrap, but fully integrated with project-builder.org 
+(which also supports rinse and mock). Contrary to these, rpmbootstrap creates 
+an environment where the packages commands are usable after build, as described 
+hereafter.
+
+rpmbootstrap works in 2 phases. The first one is used to download all
+the required packages to have a working package management system in the
+chroot working. This list of packages is stored in /etc/pb/pb.conf under
+the rbsmindep parameter (aka rpmbootstrap minimal dependencies). Once the
+packages have been downloaded from the mirror, they are extracted with
+rpm2cpio. At that point you should be able to use yum on Fedora, urpmi
+on Mandriva/Mageia and zypper on OpenSuSE. 
+The second phase uses exactly the previous mentioned tools to install 
+exactly the same package list to have a coherent RPM db at the end.
+
+rpmbootstrap has additional options to execute a post-install script
+(-s) or to add packages (-a). Then pb can use the chroot to perform even
+more actions in it.
+
+=head1 SYNOPSIS
+
+rpmbootstrap [-vhmqpdk][-s script][-i iso][-a pkg1[,pkg2,...]] distribution-version-arch [target-dir] [mirror [script]]
+
+rpmbootstrap [--verbose][--help][--man][--quiet][--print-rpms][--download-only]
+[--keep][--script script][--iso iso][--add pkg1,[pkg2,...]] distribution-version-arch [target-dir] [mirror [script]]
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-v|--verbose>
+
+Print a brief help message and exits.
+
+=item B<-h|--help>
+
+Print a brief help message and exits.
+
+=item B<--man>
+
+Prints the manual page and exits.
+
+=item B<-q|--quiet>
+
+Do not print any output.
+
+=item B<-p|--print-rpms>
+
+Print the packages to be installed, and exit. 
+Note that a target directory must be specified so rpmbootstrap can determine 
+which packages should be installed, and to resolve dependencies. 
+The target directory will be deleted.
+
+=item B<-d|--download-only>
+
+Download packages, but don't perform installation.
+
+=item B<-k|--keep>
+
+Keep packages in the cache dir for later reuse. By default remove them.
+
+=item B<-s|--script script>
+
+Name of the script you want to execute on the related VEs after the installation.
+It is executed in host environment. 
+You can use the chroot command to execute actions in the VE.
+
+=item B<-i|--iso iso_image>
+
+Name of the ISO image of the distribution you want to install on the related VE.
+
+=item B<-a|--add pkg1[,pkg2,...]>
+
+Additional packages to add from the distribution you want to install on the related VE 
+at the end of the chroot build.
+
+=back 
+
+=head1 ARGUMENTS
+
+=over 4 
+
+=item B<distribution-version-arch>
+
+Full name of the distribution that needs to be installed in the VE. E.g. fedora-11-x86_64.
+
+=item B<target-dir>
+
+This is the target directory under which the VE will be created. 
+Created on the fly if needed. 
+If none is given use the default directory hosting VE for project-builder.org 
+(Cf: vepath parameter in $HOME/.pbrc)
+
+=back 
+
+=head1 EXAMPLE
+
+To setup a Fedora 12 distribution with an i386 architecture issue:
+
+rpmbootstrap fedora-12-i386 /tmp/fedora/12/i386
+
+=head1 WEB SITES
+
+The main Web site of the project is available at L<http://www.project-builder.org/>. 
+Bug reports should be filled using the trac instance of the project at L<http://trac.project-builder.org/>.
+
+=head1 USER MAILING LIST
+
+Cf: L<http://www.mondorescue.org/sympa/info/pb-announce> for announces and 
+L<http://www.mondorescue.org/sympa/info/pb-devel> for the development of the pb project.
+
+=head1 CONFIGURATION FILE
+
+Uses Project-Builder.org configuration file (/etc/pb/pb.conf or /usr/local/etc/pb/pb.conf)
+
+=head1 AUTHORS
+
+The Project-Builder.org team L<http://trac.project-builder.org/> lead by Bruno Cornec L<mailto:bruno@project-builder.org>.
+
+=head1 COPYRIGHT
+
+Project-Builder.org is distributed under the GPL v2.0 license
+described in the file C<COPYING> included with the distribution.
+
+=cut
+
+# ---------------------------------------------------------------------------
+
+my ($projectbuilderver,$projectbuilderrev) = pb_version_init();
+my $appname = "rpmbootstrap";
+$ENV{'PBPROJ'} = $appname;
+
+# Initialize the syntax string
+
+pb_syntax_init("$appname Version $projectbuilderver-$projectbuilderrev\n");
+pb_temp_init();
+
+GetOptions("help|?|h" => \$opts{'h'}, 
+	"man|m" => \$opts{'man'},
+	"verbose|v+" => \$opts{'v'},
+	"quiet|q" => \$opts{'q'},
+	"log-files|l=s" => \$opts{'l'},
+	"script|s=s" => \$opts{'s'},
+	"print-rpms|p" => \$opts{'p'},
+	"download-only|d" => \$opts{'d'},
+	"keep|k" => \$opts{'k'},
+	"iso|i=s" => \$opts{'i'},
+	"add|a=s" => \$opts{'a'},
+	"version|V=s" => \$opts{'V'},
+) || pb_syntax(-1,0);
+
+if (defined $opts{'h'}) {
+	pb_syntax(0,1);
+}
+if (defined $opts{'man'}) {
+	pb_syntax(0,2);
+}
+if (defined $opts{'v'}) {
+	$pbdebug = $opts{'v'};
+}
+if (defined $opts{'q'}) {
+	$pbdebug=-1;
+}
+if (defined $opts{'l'}) {
+	open(pbLOG,"> $opts{'l'}") || die "Unable to log to $opts{'l'}: $!";
+	$pbLOG = \*pbLOG;
+	$pbdebug = 0  if ($pbdebug == -1);
+}
+pb_log_init($pbdebug, $pbLOG);
+#pb_display_init("text","");
+
+#if (defined $opts{'s'}) {
+#$pbscript = $opts{'s'};
+#}
+#if (defined $opts{'i'}) {
+#$iso = $opts{'i'};
+#}
+
+# Get VE name
+$ENV{'PBV'} = shift @ARGV;
+die pb_syntax(-1,1) if (not defined $ENV{'PBV'});
+
+die "Needs to be run as root" if ($EFFECTIVE_USER_ID != 0);
+
+#
+# Initialize distribution info from pb conf file
+#
+pb_log(0,"Starting VE build for $ENV{'PBV'}\n");
+my $pbos = pb_distro_get_context($ENV{'PBV'});
+
+#
+# Check target dir
+# Create if not existent and use default if none given
+#
+pb_env_init_pbrc(); # to get content of HOME/.pbrc
+my $vepath = shift @ARGV;
+
+#
+# Check for command requirements
+#
+my ($req,$opt) = pb_conf_get_if("oscmd","oscmdopt");
+pb_check_requirements($req,$opt,$appname);
+
+if (not defined $vepath) {
+	my ($vestdpath) = pb_conf_get("vepath");
+	$vepath = "$vestdpath->{'default'}/$pbos->{'name'}/$pbos->{'version'}/$pbos->{'arch'}" if (defined $vestdpath->{'default'});
+}
+
+die pb_log(0,"No target-dir specified and no default vepath found in $ENV{'PBETC'}\n") if (not defined $vepath);
+
+pb_mkdir_p($vepath) if (! -d $vepath);
+
+#
+# Get the package list to download, store them in a cache directory
+#
+my ($rbscachedir) = pb_conf_get_if("cachedir");
+my ($pkgs,$mirror) = pb_distro_get_param($pbos,pb_conf_get("rbsmindep","rbsmirrorsrv"));
+
+my $cachedir = "/var/cache/rpmbootstrap";
+$cachedir = $rbscachedir->{'default'} if (defined $rbscachedir->{'default'});
+$cachedir = $rbscachedir->{$appname} if (defined $rbscachedir->{$appname});
+
+# Point to the right subdir and create it if needed
+$cachedir .= "/$pbos->{'name'}-$pbos->{'version'}-$pbos->{'arch'}";
+pb_mkdir_p($cachedir) if (! -d $cachedir);
+
+# Get the complete package name from the mirror
+#
+my $ua = LWP::UserAgent->new;
+$ua->timeout(10);
+$ua->env_proxy;
+
+die "No mirror defined for $pbos->{'name'}-$pbos->{'version'}-$pbos->{'arch'}" if ((not defined $mirror) || ($mirror =~ /^\t*$/));
+pb_log(0,"Downloading package list from $mirror ...\n");
+my $response = $ua->get($mirror);
+if (! $response->is_success) {
+	if ($mirror =~ /i386/) {
+		# Some distro have an i586 or i686 mirror dir instead for i386
+		warn "Unable to download packages from $mirror for $pbos->{'name'}-$pbos->{'version'}-$pbos->{'arch'}.";
+		$mirror =~ s|/i386/|/i586/|;
+		$response = $ua->get($mirror);
+		if (! $response->is_success) {
+			die "Unable to download packages from $mirror for $pbos->{'name'}-$pbos->{'version'}-$pbos->{'arch'}";
+		}
+	}
+}
+pb_log(3,"Mirror $mirror gave answer: ".Dumper($response->dump(maxlength => 0))."\n");
+
+# Try to find where the repodata structure is for later usage
+my $repo = $mirror;
+my $found = 0;
+if ($pbos->{'install'} =~ /yum/) {
+	my $response1;
+	while ($found == 0) {
+		$response1 = $ua->get("$repo/repodata");
+		pb_log(2,"REPO analyzed: $repo\n");
+		if (! $response1->is_success) {
+			$repo = dirname($repo);
+
+			# There is a limit to the loop, when / is reached and nothing found
+			my ($scheme, $account, $host, $port, $path) = pb_get_uri($repo);
+			die "Unable to find the repodata structure of the mirror $mirror\nPlease check the URL or warn the dev team.\n" if (($path =~ /^[\/]+$/) || ($path =~ /^$/));
+		
+			# / not reached, so looping
+			next;
+		} else {
+			# repodata found $repo is correct
+			$found = 1;
+			pb_log(2,"REPO found: $repo\n");
+			last;
+		}
+	}
+}
+
+# Manages architectures specificities
+my $parch = $pbos->{'arch'};
+$parch = "i[3456]86" if ($pbos->{'arch'} eq "i386");
+
+# Get the list of packages and their URL in this hash
+my %url;
+foreach my $l (split(/\n/,$response->as_string())) {
+	# Find a href ref in first pos
+	if ($l =~ /<a href="([^<>]*)">([^<>]*)<\/a>/i) {
+		my $url = $1;
+		my $pkg = $1;
+		my $desc = $2;
+		pb_log(3,"Found desc URL $desc: ");
+		# find an rpm package ref name-ver-tag.arch.rpm
+		if ($pkg =~ /(.+)-([^-]+)-([^-]+)\.(noarch|$parch)\.rpm$/) {
+			pb_log(3,"package ($1 + $2 + $3 + $4)\n");
+			$url{$1} = "$mirror/$url";
+		} else {
+			pb_log(3,"not a package\n");
+		}
+	}
+}
+
+#
+# Prepare early the yum cache env for the VE in order to copy in it packages on the fly
+#
+my $oscachedir = "/tmp";
+my $osupdcachedir;
+my $osupdname = "";
+
+if ($pbos->{'install'} =~ /yum/) {
+	$oscachedir = "$vepath/var/cache/yum/core/packages/";
+	$osupdcachedir = "$vepath/var/cache/yum/updates-released/packages/";
+	$osupdname = "YUM";
+	# Recent Fedora release use a new yum cache dir
+	if (($pbos->{'name'} eq "fedora") && ($pbos->{'version'} > 8)) {
+		$oscachedir = "$vepath/var/cache/yum/$pbos->{'arch'}/$pbos->{'version'}/fedora/packages";
+		$osupdcachedir = "$vepath/var/cache/yum/$pbos->{'arch'}/$pbos->{'version'}/updates/packages";
+		$osupdcachedir = "$vepath/var/cache/yum/updates-released/packages/";
+	}
+} elsif ($pbos->{'install'} =~ /zypper/) {
+	$oscachedir = "$vepath/var/cache/zypp/packages/opensuse/suse/$pbos->{'arch'}";
+	$osupdname = "Zypper";
+} elsif ($pbos->{'install'} =~ /urpmi/) {
+	$oscachedir = "$vepath/var/cache/urpmi/rpms";
+	$osupdname = "URPMI";
+}
+pb_log(1,"Setting up $osupdname cache in VE\n");
+pb_mkdir_p($oscachedir);
+pb_mkdir_p($osupdcachedir) if (defined $osupdcachedir);
+
+# For each package to process, get it, put it in the cache dir 
+# and extract it in the target dir. If not asked to keep, remove it
+# Just download if asked so. 
+
+my $warning = 0;
+my $lwpkg ="";
+foreach my $p (split(/,/,$pkgs)) {
+	pb_log(1,"Processing package $p ...\n");
+	# Just print packages names if asked so. 
+	if (defined $url{$p}) {
+		if ($opts{'p'}) {
+			pb_log(0,"$url{$p}\n");
+			next;
+		} else {
+			# Now download if not already in cache
+			my $p1 = basename($url{$p});
+			if (! -f "$cachedir/$p1") {
+				pb_system("wget --quiet -O $cachedir/$p1 $url{$p}","Downloading package $p1 ...");
+			} else {
+				pb_log(1,"Package $p1 already in cache\n");
+			}
+		
+			# End if download only
+			if ($opts{'d'}) {
+				next;
+			}
+	
+			#
+			# Copy the cached .RPM files into the oscachedir directory, so that os doesn't need to download them again.
+			#
+			pb_log(1,"Link package into $oscachedir\n");
+			copy("$cachedir/$p1",$oscachedir) if (defined $oscachedir);
+			symlink("$oscachedir/$p1","$osupdcachedir/p1") if (defined $osupdcachedir);
+
+			# And extract it to the finale dir
+			pb_system("cd $vepath ; rpm2cpio $cachedir/$p1 | cpio -ivdum","Extracting package $p1 into $vepath");
+		
+			# Remove cached package if not asked to keep
+			if (! $opts{'k'}) {
+				unlink("$cachedir/$p1");
+			}
+	
+		}
+	} else {
+		pb_log(0,"WARNING: unable to find URL for $p\n");
+		$warning++;
+		$lwpkg .= " $p";
+	}
+}
+
+if ($warning ge 1) {
+pb_log(0,"$warning WARNINGS found.\nMaybe you should review your package list for $pbos->{'name'}-$pbos->{'version'}-$pbos->{'arch'}\nand remove$lwpkg\n");
+}
+
+# Stop here if we just print
+if ($opts{'p'}) {
+	exit(0);
+}
+
+# Now executes the VE finalization steps required for it to work correctly
+pb_log(0,"VE post configuration\n");
+
+# yum needs that distro-release package be installed, so force it
+if ($pbos->{'install'} =~ /yum/) {
+	my $ddir = $pbos->{'name'};
+	foreach my $p1 (<$cachedir/($ddir|redhat)-release-*.rpm>) {
+		copy("$cachedir/$p1","$vepath/tmp");
+		pb_system("chroot $vepath rpm -ivh --force --nodeps /tmp/$p1","Forcing RPM installation of $p1");
+		unlink("$vepath/tmp/$p1");
+	}
+}
+#
+# Make sure there is a resolv.conf file present, such that DNS lookups succeed.
+#
+pb_log(1,"Creating resolv.conf\n");
+pb_mkdir_p("$vepath/etc");
+copy("/etc/resolv.conf","$vepath/etc/");
+
+#
+# BUGFIX:
+#
+if ((($pbos->{'name'} eq "centos") || ($pbos->{'name'} eq "rhel")) && ($pbos->{'version'} eq "5")) {
+	pb_log(1,"BUGFIX for centos-5\n");
+	pb_mkdir_p("$vepath/usr/lib/python2.4/site-packages/urlgrabber.skx");
+	foreach my $i (<$vepath/usr/lib/python2.4/site-packages/urlgrabber/keepalive.*>) {
+    	move($i,"$vepath/usr/lib/python2.4/site-packages/urlgrabber.skx/");
+	}
+}
+
+#
+# /proc needed
+#
+pb_mkdir_p("$vepath/proc");
+pb_system("mount -o bind /proc $vepath/proc","Mounting /proc");
+
+#
+# Some devices may be needed
+#
+pb_mkdir_p("$vepath/dev");
+chmod 0755,"$vepath/dev";
+pb_system("mknod -m 644 $vepath/dev/random c 1 8","Creating $vepath/dev/random") if (! -c "$vepath/dev/random");
+pb_system("mknod -m 644 $vepath/dev/urandom c 1 9","Creating $vepath/dev/urandom") if (! -c "$vepath/dev/urandom");
+pb_system("mknod -m 666 $vepath/dev/zero c 1 5","Creating $vepath/dev/zero") if (! -c "$vepath/dev/zero");
+pb_system("mknod -m 666 $vepath/dev/null c 1 3","Creating $vepath/dev/null") if (! -c "$vepath/dev/null");
+
+my $minipkglist;
+
+pb_log(1,"Adapting $osupdname repository entries\n");
+if ($pbos->{'install'} =~ /yum/) {
+	#
+	# Force the architecture for yum
+	# The goal is to allow i386 chroot on x86_64
+	#
+	# FIX: Not sufficient to have yum working
+	# mirrorlist is not usable
+	# $releasever also needs to be filtered
+	# yum.conf as well
+	foreach my $i (<$vepath/etc/yum.repos.d/*>,"$vepath/etc/yum.conf") {
+		pb_system("sed -i -e 's/\$basearch/$pbos->{'arch'}/g' $i","","quiet");
+		pb_system("sed -i -e 's/\$releasever/$pbos->{'version'}/g' $i","","quiet");
+		pb_system("sed -i -e 's/^mirrorlist/#mirrorlist/' $i","","quiet");
+		# rather use neutral separators here
+		pb_system("sed -i -e 's|^#baseurl.*\$|baseurl=$repo|' $i","","quiet");
+	}
+	$minipkglist = "ldconfig yum passwd vim-minimal dhclient authconfig";
+} elsif ($pbos->{'install'} =~ /zypper/) {
+	pb_mkdir_p("$vepath/etc/zypp/repos.d");
+	open(REPO,"> $vepath/etc/zypp/repos.d/$pbos->{'name'}-$pbos->{'version'}") || die "Unable to create repo file";
+	my $baseurl = dirname(dirname($mirror));
+	# Setup the repo
+	if ($pbos->{'version'} eq "10.2") {
+		pb_system("chroot $vepath /bin/bash -c \"yes | /usr/bin/zypper sa $baseurl $pbos->{'name'}-$pbos->{'version'}\"","Bootstrapping Zypper");
+	} else {
+		pb_system("chroot $vepath /bin/bash -c \"/usr/bin/zypper ar $baseurl $pbos->{'name'}-$pbos->{'version'}\"","Bootstrapping Zypper");
+	}
+	#print REPO << "EOF";
+#[opensuse]
+#name=$pbos->{'name'}-$pbos->{'version'}
+#baseurl=$baseurl
+#enabled=1
+#gpgcheck=1
+#
+#EOF
+	close(REPO);
+	$minipkglist = "zypper";
+} elsif ($pbos->{'install'} =~ /urpmi/) {
+	# Setup the repo
+	my $baseurl = dirname(dirname(dirname($mirror)));
+	pb_system("chroot $vepath /bin/bash -c \"urpmi.addmedia --distrib $baseurl\"","Bootstrapping URPMI");
+	$minipkglist = "ldconfig urpmi passwd vim-minimal dhcp-client";
+}
+
+#
+# Run "install the necessary modules".
+# No need for sudo here
+#
+$pbos->{'install'} =~ s/sudo//g;
+pb_system("chroot $vepath /bin/bash -c \"$pbos->{'install'} $minipkglist \"","Bootstrapping OS by running $pbos->{'install'} $minipkglist");
+
+#
+# make 'passwd' work.
+#
+pb_log(1,"Authfix\n");
+pb_system("chroot $vepath /bin/bash -c \"if [ -x /usr/bin/authconfig ]; then /usr/bin/authconfig --enableshadow --update; fi\"","Calling authconfig");
+
+# Installed additional packages we were asked to
+if (defined $opts{'a'}) {
+	$opts{'a'} =~ s/,/ /g;
+	pb_system("chroot $vepath /bin/bash -c \"$pbos->{'install'} $opts{'a'} \"","Adding packages to OS by running $pbos->{'install'} $opts{'a'}");
+}
+
+#
+# Clean up
+#
+pb_log(1,"Cleaning up\n");
+if ($pbos->{'install'} =~ /yum/) {
+	pb_system("chroot $vepath /usr/bin/yum clean all","Cleaning yum");
+}
+pb_system("umount $vepath/proc","Unmounting /proc");
+find(\&unlink_old_conf, $vepath);
+
+# Executes post-install step if asked for
+if ($opts{'s'}) {
+	pb_system("$opts{'s'} $vepath","Executing the post-install script: $opts{'s'} $vepath");
+}
+
+# Function for File::Find
+sub unlink_old_conf {
+
+	unlink($_) if ($_ =~ /\.rpmorig$/);
+	unlink($_) if ($_ =~ /\.rpmnew$/);
+}

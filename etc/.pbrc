@@ -1,0 +1,43 @@
+#
+# Valid values for vetype are
+# chroot, (schroot, ... TBD)
+vetype default = chroot
+# Possible values are rpmbootstrap, mock, rinse ....TBD
+verpmtype default = rpmbootstrap
+# Possible value is debootstrap
+vedebtype default = debootstrap
+# Conf file for the appli chosen 
+# It's conf dir for mock
+# It's conf file for mock
+# It's not used yet by rpmbootstrap
+rbsconf default = /etc/rinse/rinse-dploy.conf
+# Special for rinse: script to launch before populating the VE
+rbsb4pi centos = /home/rinse/bin/before-post-install.sh
+
+verebuild default = false
+
+# Hash for VE stuff on vmtype
+ventp default = 1.pool.ntp.org
+ventpcmd default = /usr/sbin/ntpdate
+
+# We suppose we can commmunicate with the VE through schroot
+vehost default = localhost
+velogin default = pb
+
+# per VEs needed paramaters
+veopt default = 
+
+# Do we use snapshot mode for VEs ?
+# In which case all modifs in the VE are lost at the end
+vesnap default = false
+
+#
+# For Virtual machines management
+# Naming convention to follow: distribution name (as per ProjectBuilder::Distribution)
+# followed by '-' and by release number
+# followed by '-' and by architecture
+# a chroot rhel-3-i386 here means that the VE will be located under $VEROOT/rhel/3/i386
+#
+#velist default = mandrake-10.1-i386,mandrake-10.2-i386,mandriva-2006.0-i386,mandriva-2007.0-i386,mandriva-2007.1-i386,mandriva-2008.0-i386,mandriva-2008.1-i386,mandriva-2009.0-i386,redhat-7.3-i386,redhat-9-i386,fedora-4-i386,fedora-5-i386,fedora-6-i386,fedora-7-i386,fedora-8-i386,fedora-9-i386,fedora-10-i386,rhel-2.1-i386,rhel-3-i386,rhel-4-i386,rhel-5-i386,suse-10.0-i386,suse-10.1-i386,suse-10.2-i386,suse-10.3-i386,sles-9-i386,sles-10-i386,gentoo-nover-i386,debian-3.1-i386,debian-4.0-i386,ubuntu-6.06-i386,ubuntu-7.04-i386,ubuntu-7.10-i386,ubuntu-8.04-i386,mandriva-2007.0-x86_64,mandriva-2007.1-x86_64,mandriva-2008.0-x86_64,mandriva-2008.1-x86_64,mandriva-2009.0-x86_64,fedora-6-x86_64,fedora-7-x86_64,fedora-8-x86_64,fedora-9-x86_64,fedora-10-x86_64,rhel-4-x86_64,rhel-5-x86_64,suse-10.2-x86_64,suse-10.3-x86_64,sles-10-x86_64,gentoo-nover-x86_64,debian-4.0-x86_64,ubuntu-7.04-x86_64,ubuntu-7.10-x86_64,rhel-3-ia64,centos-4-i386,centos-5-i386,centos-4-x86_64,centos-5-x86_64
+#velist default = centos-4-i386,centos-5-i386,centos-4-x86_64,centos-5-x86_64
+velist default = centos-4-i386,centos-5-i386,centos-4-x86_64,centos-5-x86_64,debian-5.0-i386,debian-5.0-x86_64,lsb-3.2.0-i386,lsb-3.2.0-x86_64,lsb-4.0.1-i386,lsb-4.0.1-x86_64,mandriva-2010.0-x86_64,ubuntu-10.04-x86_64,mandriva-2010.1-x86_64
