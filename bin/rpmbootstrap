@@ -286,11 +286,11 @@ my $response = $ua->get($mirror);
 if (! $response->is_success) {
 	if ($mirror =~ /i386/) {
 		# Some distro have an i586 or i686 mirror dir instead for i386
-		warn "Unable to download packages from $mirror for $pbos->{'name'}-$pbos->{'version'}-$pbos->{'arch'}.";
+		warn "Unable to download package from $mirror for $pbos->{'name'}-$pbos->{'version'}-$pbos->{'arch'}: " . $response->status_line;
 		$mirror =~ s|/i386/|/i586/|;
 		$response = $ua->get($mirror);
 		if (! $response->is_success) {
-			die "Unable to download packages from $mirror for $pbos->{'name'}-$pbos->{'version'}-$pbos->{'arch'}";
+			die "Unable to download package from $mirror for $pbos->{'name'}-$pbos->{'version'}-$pbos->{'arch'}: " . $response->status_line;
 		}
 	}
 }
@@ -381,6 +381,7 @@ my $warning = 0;
 my $lwpkg ="";
 my @installed_packages;
 foreach my $p (split(/,/,$pkgs)) {
+        $p =~ s/\s+//go;
 	pb_log(1,"Processing package $p ...\n");
 	# Just print packages names if asked so. 
 	if (defined $url{$p}) {
@@ -391,7 +392,8 @@ foreach my $p (split(/,/,$pkgs)) {
 			# Now download if not already in cache
 			my $p1 = basename($url{$p});
 			if (! -f "$cachedir/$p1") {
-				pb_system("wget --quiet -O $cachedir/$p1 $url{$p}","Downloading package $p1 ...");
+				pb_system("wget --quiet -O $cachedir/$p1-new $url{$p}","Downloading package $p1 ...");
+                                rename("$cachedir/$p1-new", "$cachedir/$p1") || die "mv $cachedir/$p1-new $cachedir/$p1 failed: $!";
 			} else {
 				pb_log(1,"Package $p1 already in cache\n");
 			}
