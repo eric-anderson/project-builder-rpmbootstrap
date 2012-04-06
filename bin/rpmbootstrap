@@ -536,6 +536,19 @@ if ($pbos->{'install'} =~ /yum/) {
 # No need for sudo here
 #
 $pbos->{'install'} =~ s/sudo//g;
+if (defined $ENV{http_proxy} && $ENV{http_proxy} ne '' || defined $ENV{ftp_proxy} && $ENV{ftp_proxy} ne '') {
+        # For opensuse 11.4 or 12.1 -- one of them didn't work with http_proxy or HTTP_PROXY set.
+        open(my $file, ">$vepath/etc/sysconfig/proxy") or die "can't open $vepath/etc/sysconfig/proxy: $!";
+        print $file "HTTP_PROXY=$ENV{http_proxy}\n" if defined $ENV{http_proxy} && $ENV{http_proxy} ne '';
+        print $file "FTP_PROXY=$ENV{ftp_proxy}\n" if defined $ENV{ftp_proxy} && $ENV{ftp_proxy} ne '';
+}
+# Keep redhat variants from destroying nis domain on install
+pb_system("chroot $vepath /bin/bash -e -c \"ln -snf /bin/true /bin/domainname\"");
+
+if ($vepath =~ /fedora/i) { # hack to prevent fedora from destroying NIS settings on host
+        open (my $file, ">$vepath/etc/pam.d/system-auth-ac") or die "unable to open $vepath/etc/pam.d/system-auth-ac for write: $!";
+        print $file "#pam_systemd -- will fix later in bootstrap\n";
+}
 pb_system("chroot $vepath /bin/bash -c \"$pbos->{'install'} $minipkglist \"","Bootstrapping OS by running $pbos->{'install'} $minipkglist");
 
 if ($pbos->{install} =~ /yum/) { # CentOS6 will replace the yum.repos.d files; oddly it will leave the yum.conf file alone and make the new one ".rpmnew"
@@ -550,7 +563,9 @@ if ($pbos->{install} =~ /yum/) { # CentOS6 will replace the yum.repos.d files; o
 # make 'passwd' work.
 #
 pb_log(1,"Authfix\n");
-pb_system("chroot $vepath /bin/bash -c \"if [ -x /usr/bin/authconfig ]; then /usr/bin/authconfig --enableshadow --update; fi\"","Calling authconfig");
+# (in case it was changed during the install)
+pb_system("chroot $vepath /bin/bash -e -c \"ln -snf /bin/true /bin/domainname\"");
+pb_system("chroot $vepath /bin/bash -c \"if [ -x /usr/bin/authconfig ]; then /usr/bin/authconfig --enableshadow --update --nostart; fi\"","Calling authconfig");
 
 # Installed additional packages we were asked to
 if (defined $opts{'a'}) {
